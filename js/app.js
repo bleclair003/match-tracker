@@ -15,7 +15,7 @@ import { REMINDER_KINDS, LEAD_OPTIONS, RADIUS_OPTIONS, computeReminders, pruneDi
 import { MATCH_SOURCES, LINKS_CHECKED } from './sources.js';
 import { seasonOf, filterResults, filterOptions, summarize } from './stats.js';
 import {
-  NEW_DAYS, LEVELS, levelLabel, eventLevelLabel, normalizeTab, filterEvents, followedSet, isFollowed, isNew, newFromClubs, sportChoices, inMyMatches,
+  NEW_DAYS, LEVELS, levelLabel, eventLevelLabel, normalizeTab, filterEvents, followedSet, isNew, notifications, sportChoices, inMyMatches,
 } from './discover.js';
 
 const view = document.getElementById('view');
@@ -203,12 +203,32 @@ function reminderCard(r, now) {
   </div>`;
 }
 
+// Count of new-match notifications on the Discover tab-bar icon.
+async function refreshDiscoverBadge() {
+  const link = document.querySelector('.tabbar a[data-tab="discover"]');
+  if (!link) return;
+  let badge = link.querySelector('.badge');
+  if (!badge) {
+    badge = document.createElement('span');
+    badge.className = 'badge';
+    link.append(badge);
+  }
+  if (sync.mode === 'cloud' && !sync.user) { badge.hidden = true; return; }
+  const [discover, events, clubs] = await Promise.all([store.getDiscover(), store.listEvents(), store.listClubs()]);
+  const n = notifications(events, discover, followedSet(discover, clubs), ymdOf(clock())).length;
+  badge.textContent = n;
+  badge.hidden = !n;
+  link.setAttribute('aria-label', n ? `Discover, ${n} new match${n === 1 ? '' : 'es'}` : 'Discover');
+}
+
 // Recomputes reminders: updates the tab badge always, and the list when Upcoming is showing.
 async function refreshReminders() {
   if (sync.mode === 'cloud' && !sync.user) {
     document.getElementById('badge').hidden = true;
+    refreshDiscoverBadge().catch(console.error);
     return;
   }
+  refreshDiscoverBadge().catch(console.error);
   const [all, settings] = await Promise.all([store.list(), store.getSettings()]);
   const now = clock();
   const due = computeReminders(all, settings, now);
@@ -869,6 +889,7 @@ function clubCard(c) {
 // ---- Discover: your custom lists of match listings ---------------------------------
 
 const DISCOVER_TAB_KEY = 'matchTracker.discoverTab.v1'; // which tab is open, per device
+const NEW_TAB_ID = '__new'; // the built-in New (notifications) tab
 const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
 
 function linkLabel(url) {
@@ -884,7 +905,7 @@ function eventWhen(ev, today) {
   return d === 0 ? 'Today' : d === 1 ? 'Tomorrow' : `In ${d} days`;
 }
 
-function eventCard(ev, { today, followed, matches, dismissable = false }) {
+function eventCard(ev, { today, matches, dismissable = false, inTabs = null }) {
   const sub = [[ev.sport, eventLevelLabel(ev)].filter(Boolean).join(' '), ev.club].filter(Boolean).join(' · ');
   const saved = inMyMatches(ev, matches);
   const thisYear = today.slice(0, 4);
@@ -894,8 +915,9 @@ function eventCard(ev, { today, followed, matches, dismissable = false }) {
       <div class="card-title">${esc(ev.name)}</div>
       ${sub ? `<div class="card-sub">${esc(sub)}</div>` : ''}
       ${ev.location ? `<div class="card-sub">${esc(ev.location)}</div>` : ''}
+      ${inTabs ? `<div class="card-sub in-tabs">In: ${esc(inTabs.join(', '))} · posted ${esc(fmtDate(ev.firstSeen))}</div>` : ''}
       <div class="card-meta">
-        ${isNew(ev, today) && isFollowed(ev, followed) ? '<span class="pill pill-needs">New</span>' : ''}
+        ${isNew(ev, today) ? '<span class="pill pill-needs">New</span>' : ''}
         ${ev.status ? `<span class="pill ${/open/i.test(ev.status) ? 'pill-registered' : 'pill-muted'}">${esc(cap(ev.status))}</span>` : ''}
         ${saved ? '<span class="pill pill-interested">In my matches</span>' : ''}
         <span class="when">${esc(eventWhen(ev, today))}</span>
@@ -930,12 +952,14 @@ async function renderDiscover() {
   ]);
   const today = ymdOf(clock());
   const followed = followedSet(discover, clubs);
-  const fresh = newFromClubs(events, followed, discover, today);
+  const fresh = notifications(events, discover, followed, today);
+  const notifyTabs = discover.tabs.filter((t) => t.notify);
   let activeId = '';
   try { activeId = localStorage.getItem(DISCOVER_TAB_KEY) || ''; } catch { /* first tab then */ }
-  const tab = discover.tabs.find((t) => t.id === activeId) || discover.tabs[0];
+  const onNew = activeId === NEW_TAB_ID;
+  const tab = onNew ? null : discover.tabs.find((t) => t.id === activeId) || discover.tabs[0];
   const listed = tab ? filterEvents(events, tab.filter, followed, today) : [];
-  const ctx = { today, followed, matches };
+  const ctx = { today, matches };
 
   const radius = settings.travelRadius;
   const sorted = [...clubs].sort((a, b) =>
@@ -947,17 +971,24 @@ async function renderDiscover() {
   view.innerHTML = `
     <div class="page-head"><h2>Discover</h2><a class="small-link" href="#discover/tabs">Edit tabs</a></div>
 
-    ${fresh.length ? `
-      <h3 class="section-label">New from your clubs</h3>
-      <p class="fine">Posted in the last ${NEW_DAYS} days by clubs you follow.</p>
-      <div class="list new-list">${fresh.map((ev) => eventCard(ev, { ...ctx, dismissable: true })).join('')}</div>` : ''}
-
-    ${discover.tabs.length ? `
-      <div class="tab-chips" role="tablist" aria-label="Your lists">
-        ${discover.tabs.map((t) => `<button type="button" role="tab" class="chip" data-tab-id="${esc(t.id)}" aria-selected="${t === tab}">${esc(t.name)}</button>`).join('')}
-      </div>
+    <div class="tab-chips" role="tablist" aria-label="Your lists">
+      <button type="button" role="tab" class="chip chip-new" data-tab-id="${NEW_TAB_ID}" aria-selected="${onNew}">New${fresh.length ? ` <span class="chip-count">${fresh.length}</span>` : ''}</button>
+      ${discover.tabs.map((t) => `<button type="button" role="tab" class="chip" data-tab-id="${esc(t.id)}" aria-selected="${t === tab}">${esc(t.name)}${t.notify ? ' <span class="bell" title="Notifications on" aria-label="notifications on">🔔</span>' : ''}</button>`).join('')}
+    </div>
+    ${onNew ? `
+      <div role="tabpanel" aria-label="New matches">
+        <p class="fine">${notifyTabs.length
+          ? `Matches posted in the last ${NEW_DAYS} days in tabs you get notifications for: ${esc(notifyTabs.map((t) => t.name).join(', '))}.`
+          : 'No tabs have notifications on.'} <a href="#discover/tabs">Change</a></p>
+        ${fresh.length ? `
+          <div class="list new-list">${fresh.map((n) => eventCard(n.ev, { ...ctx, dismissable: true, inTabs: n.tabs })).join('')}</div>
+          <button class="btn small quiet dismiss-all" type="button" id="dismiss-all">Dismiss all</button>`
+        : `<div class="empty"><p>${notifyTabs.length ? 'Nothing new.' : 'Turn on notifications for a tab.'}</p>
+            <p class="muted">${notifyTabs.length ? 'New matches show here after a refresh finds them.' : 'Tick "Notify me" on a tab in <a href="#discover/tabs">Edit tabs</a>.'}</p></div>`}
+      </div>`
+    : tab ? `
       <div role="tabpanel" aria-label="${esc(tab.name)}">
-        <p class="fine">${esc(describeFilter(tab.filter))} · ${listed.length} upcoming</p>
+        <p class="fine">${esc(describeFilter(tab.filter))} · ${listed.length} upcoming${tab.notify ? ' · notifications on' : ''}</p>
         ${listed.length ? `<div class="list">${listed.map((ev) => eventCard(ev, ctx)).join('')}</div>`
           : `<div class="empty"><p>${events.length ? 'No upcoming matches fit this list.' : 'No listings yet.'}</p>
              <p class="muted">${events.length ? 'Change what it shows with <a href="#discover/tabs">Edit tabs</a>.' : 'They appear here after the first refresh.'}</p></div>`}
@@ -997,17 +1028,20 @@ async function renderDiscover() {
       renderDiscover().catch(showError);
     };
   });
-  view.querySelectorAll('[data-dismiss]').forEach((b) => {
-    b.onclick = async () => {
-      try {
-        const latest = await store.getDiscover();
-        const ids = new Set(events.map((e) => e.id));
-        const kept = Object.fromEntries(Object.entries(latest.dismissedNew).filter(([k]) => ids.has(k)));
-        await store.saveDiscover({ ...latest, dismissedNew: { ...kept, [b.dataset.dismiss]: true } });
-        renderDiscover();
-      } catch (err) { showError(err); }
-    };
-  });
+  const dismiss = async (idsToHide) => {
+    try {
+      const latest = await store.getDiscover();
+      const ids = new Set(events.map((e) => e.id));
+      const kept = Object.fromEntries(Object.entries(latest.dismissedNew).filter(([k]) => ids.has(k)));
+      idsToHide.forEach((id) => { kept[id] = true; });
+      await store.saveDiscover({ ...latest, dismissedNew: kept });
+      await renderDiscover();
+      refreshDiscoverBadge().catch(console.error);
+    } catch (err) { showError(err); }
+  };
+  view.querySelectorAll('[data-dismiss]').forEach((b) => { b.onclick = () => dismiss([b.dataset.dismiss]); });
+  const all = view.querySelector('#dismiss-all');
+  if (all) all.onclick = () => dismiss(fresh.map((n) => n.ev.id));
   const sel = view.querySelector('#radius');
   if (sel) {
     sel.onchange = async () => {
@@ -1031,6 +1065,7 @@ function tabFields(t, i, count, sports) {
     <div class="field"><span class="label">Match level (none checked = all)</span>
       <div class="checks">${LEVELS.map((n) => check(`levels-${i}`, n, levelLabel(n), f.levels.includes(n))).join('')}</div></div>
     <label class="check"><input type="checkbox" name="followed-${i}"${f.followedOnly ? ' checked' : ''}> Only clubs I follow</label>
+    <label class="check notify-check"><input type="checkbox" name="notify-${i}"${t.notify ? ' checked' : ''}> 🔔 Notify me when new matches are posted in this tab</label>
     ${field({ name: `states-${i}`, label: 'States (optional)', value: f.states.join(', '), hint: '2-letter codes, for example IN, KY, OH. Empty = all states.', attrs: 'autocomplete="off" autocapitalize="characters"' })}
     ${field({ name: `text-${i}`, label: 'Name contains (optional)', value: f.text, attrs: 'autocomplete="off"' })}
     <div class="reminder-actions">
@@ -1056,6 +1091,7 @@ async function renderDiscoverTabs() {
       states: form.elements[`states-${i}`].value,
       text: form.elements[`text-${i}`].value.trim(),
     },
+    notify: form.elements[`notify-${i}`].checked,
   }));
   // normalizeTab turns an empty name into 'Untitled'; keep it empty so Save can ask for one.
   const namesOf = (form) => tabs.map((t, i) => form.elements[`name-${i}`].value.trim());
@@ -1063,7 +1099,7 @@ async function renderDiscoverTabs() {
   const draw = () => {
     view.innerHTML = `
       <div class="page-head"><h2>Edit tabs</h2></div>
-      <p class="muted">Each tab lists upcoming matches from the Discover listings that fit its choices.</p>
+      <p class="muted">Each tab lists upcoming matches from the Discover listings that fit its choices. Tick "Notify me" on a tab to get its newly posted matches in the New tab, with a count on the Discover icon.</p>
       <form id="f" class="form" novalidate>
         ${tabs.map((t, i) => tabFields(t, i, tabs.length, sports)).join('') || '<p class="muted">No tabs. Add one below.</p>'}
         <button class="btn" type="button" id="add">+ Add a tab</button>
