@@ -47,6 +47,7 @@ The app opens without signal once it has been opened online at least once.
 | `js/store.js` | Where data is saved. Today that's this browser's `localStorage`; a synced version replaces it later |
 | `js/reminders.js` | Decides which reminders are due at a given moment, plus the lead-time options and their defaults |
 | `js/sources.js` | The official match-search and club-finder links on the Discover tab, and the date they were last checked |
+| `js/discover.js` | The Discover tab's custom lists: tab filters, "clubs you follow", and which listings count as new |
 | `js/stats.js` | Filters by season, sport and division, plus the summary numbers for the Progress tab |
 | `js/cloud.js` | Sign-in and synced storage using Firebase (Auth + Firestore with an offline copy on the device) |
 | `js/firebase-config.js` | Your Firebase project's web config. `null` means sync is off and data stays in the browser |
@@ -63,6 +64,13 @@ Common changes:
 
 ## Discover tab
 
+- **Your lists (tabs):** the top of Discover is a row of tabs. Each tab is a saved filter over the match **listings**: sports, match level (I, II, III), only clubs you follow, states, and words in the name. Tap **Edit tabs** to add, rename, reorder or delete tabs. The tabs are saved with the account, so they're the same on every device.
+  - Starting tabs: **USPSA Level II & III** (all US states) and **My clubs** (matches posted by clubs you follow).
+  - Each listing links to its PractiScore or USPSA.org page. **Add to my matches** starts a new match with its name, date, club, place and link filled in. Listings already saved show "In my matches".
+- **New from your clubs:** reminders at the top for listings from clubs you follow that first appeared in the last 7 days. **Dismiss** hides one.
+  - Listings found by the very first refresh are the starting point, so they're not counted as new.
+- **Clubs you follow** = the PractiScore clubs you follow (saved at each refresh) plus every club under **My clubs**. To follow another club in the app, add it under My clubs with its PractiScore club page as the website.
+- **Where listings come from:** USPSA's major-match list (uspsa.org/matches/major, Level II and III) and the "Upcoming Matches" on each followed club's PractiScore page. Neither site offers a data feed, so the app can't fetch them. **Listings don't update by themselves:** ask Claude to "refresh Discover". Claude reads those pages in your browser and saves them to `users/{uid}/events`, with the date each listing was first seen. The line under the tabs shows the last refresh.
 - **Search for matches:** links to official match listings and club finders for USPSA and PCSL, plus PractiScore (where most of their local matches take registration). Only these two organizations are listed, by choice. Nothing is imported automatically: none of these sites offers an API or data feed, and PractiScore and uspsa.org block automated requests.
   - All links were opened by hand on 2026-11-06, except **PractiScore match search**. PractiScore shows a "verify you are human" page to automated checks. Open it once yourself, and if it works, set `checked: true` in `sources.js`.
   - pcsl.org is a soccer league. The shooting league is pcsleague.us, and its site has no match finder.
