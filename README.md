@@ -13,6 +13,30 @@ python -m http.server 8123 --bind 127.0.0.1 --directory match-tracker
 
 Then open http://localhost:8123. You need the server because the app uses JavaScript modules. Double-clicking `index.html` won't work.
 
+## Live site
+
+**https://bleclair003.github.io/match-tracker/**. It's hosted free on GitHub Pages from the `main` branch of https://github.com/bleclair003/match-tracker. The repo is public, so anyone can read the code. Match data never goes there; it stays in the browser on each device.
+
+### Publishing an update
+
+Make your changes and test them locally. Then, from this folder:
+
+```
+git add -A
+git commit -m "Describe the change"
+git push
+```
+
+GitHub Pages rebuilds in about a minute. The app always checks for the newest files when it has signal, so the update shows up the next time it's opened. If you add a new file the app needs offline, also add it to `SHELL` in `sw.js` and change `VERSION`.
+
+### Installing on an iPhone
+
+1. Open the live site in **Safari**.
+2. Tap Share (the square with an arrow), then **Add to Home Screen**, then Add.
+3. From then on, open it from the home-screen icon. On iPhone, the home-screen app and the Safari tab keep **separate data**. The home-screen app is also exempt from Safari clearing unused website data, so use only the icon.
+
+The app opens without signal once it has been opened online at least once.
+
 ## Files
 
 | File | What it does |
