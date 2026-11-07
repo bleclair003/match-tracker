@@ -16,4 +16,11 @@
 // These values are meant to be public. Your data is protected by the sign-in and
 // the security rules in firestore.rules, not by hiding this file.
 
-export const firebaseConfig = null;
+export const firebaseConfig = {
+  apiKey: "AIzaSyCVPbjy9MVTxkUPZg3wJik_4xMu6a1T_-8",
+  authDomain: "match-tracker-c02e6.firebaseapp.com",
+  projectId: "match-tracker-c02e6",
+  storageBucket: "match-tracker-c02e6.firebasestorage.app",
+  messagingSenderId: "964909302123",
+  appId: "1:964909302123:web:29d13faca78805a792cc2e",
+};
