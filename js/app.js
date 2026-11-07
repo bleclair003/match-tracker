@@ -15,7 +15,7 @@ import { REMINDER_KINDS, LEAD_OPTIONS, RADIUS_OPTIONS, computeReminders, pruneDi
 import { MATCH_SOURCES, LINKS_CHECKED } from './sources.js';
 import { seasonOf, filterResults, filterOptions, summarize } from './stats.js';
 import {
-  NEW_DAYS, LEVELS, levelLabel, normalizeTab, filterEvents, followedSet, isFollowed, isNew, newFromClubs, sportChoices, inMyMatches,
+  NEW_DAYS, LEVELS, levelLabel, eventLevelLabel, normalizeTab, filterEvents, followedSet, isFollowed, isNew, newFromClubs, sportChoices, inMyMatches,
 } from './discover.js';
 
 const view = document.getElementById('view');
@@ -885,7 +885,7 @@ function eventWhen(ev, today) {
 }
 
 function eventCard(ev, { today, followed, matches, dismissable = false }) {
-  const sub = [[ev.sport, levelLabel(ev.level)].filter(Boolean).join(' '), ev.club].filter(Boolean).join(' · ');
+  const sub = [[ev.sport, eventLevelLabel(ev)].filter(Boolean).join(' '), ev.club].filter(Boolean).join(' · ');
   const saved = inMyMatches(ev, matches);
   const thisYear = today.slice(0, 4);
   return `<div class="card match-card event-card">
