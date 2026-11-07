@@ -9,10 +9,13 @@
 //   users/{uid}/matches/{matchId}
 //   users/{uid}/clubs/{clubId}
 //   users/{uid}/meta/settings
+//   users/{uid}/events/{eventId}     Discover listings (written by a refresh)
+//   users/{uid}/meta/discover        Discover tabs, followed PractiScore clubs
 // firestore.rules only lets a signed-in user read and write their own users/{uid}.
 
 import { normalizeMatch, normalizeClub, newId } from './model.js';
 import { normalizeSettings } from './reminders.js';
+import { normalizeDiscover, normalizeEvent } from './discover.js';
 
 export const FIREBASE_SDK_VERSION = '13.1.0';
 const SDK = `https://www.gstatic.com/firebasejs/${FIREBASE_SDK_VERSION}`;
@@ -60,8 +63,8 @@ export function createCloudStore({ db, F }, uid, { onRemoteChange, onStatus, onE
   const userDoc = (...path) => F.doc(db, 'users', uid, ...path);
   const userCol = (name) => F.collection(db, 'users', uid, name);
 
-  const state = { matches: new Map(), clubs: new Map(), settings: normalizeSettings(null) };
-  const pending = { matches: false, clubs: false, settings: false };
+  const state = { matches: new Map(), clubs: new Map(), events: new Map(), settings: normalizeSettings(null), discover: normalizeDiscover(null) };
+  const pending = { matches: false, clubs: false, events: false, settings: false, discover: false };
   let unsubs = [];
   let attached = false;
 
@@ -96,6 +99,20 @@ export function createCloudStore({ db, F }, uid, { onRemoteChange, onStatus, onE
         const next = normalizeSettings(snap.exists() ? snap.data() : null);
         const changed = JSON.stringify(next) !== JSON.stringify(state.settings);
         state.settings = next;
+        if (attached && changed && !snap.metadata.hasPendingWrites) onRemoteChange?.();
+        resolve();
+      }, (err) => { fail(err); resolve(); }));
+    });
+  }
+
+  function listenDiscover() {
+    return new Promise((resolve) => {
+      unsubs.push(F.onSnapshot(userDoc('meta', 'discover'), { includeMetadataChanges: true }, (snap) => {
+        pending.discover = snap.metadata.hasPendingWrites;
+        reportStatus();
+        const next = normalizeDiscover(snap.exists() ? snap.data() : null);
+        const changed = JSON.stringify(next) !== JSON.stringify(state.discover);
+        state.discover = next;
         if (attached && changed && !snap.metadata.hasPendingWrites) onRemoteChange?.();
         resolve();
       }, (err) => { fail(err); resolve(); }));
@@ -140,7 +157,10 @@ export function createCloudStore({ db, F }, uid, { onRemoteChange, onStatus, onE
     uid,
 
     async attach() {
-      await Promise.all([listenCollection('matches', normalizeMatch), listenCollection('clubs', normalizeClub), listenSettings()]);
+      await Promise.all([
+        listenCollection('matches', normalizeMatch), listenCollection('clubs', normalizeClub),
+        listenCollection('events', normalizeEvent), listenSettings(), listenDiscover(),
+      ]);
       attached = true;
     },
     detach() {
@@ -166,6 +186,15 @@ export function createCloudStore({ db, F }, uid, { onRemoteChange, onStatus, onE
       const clean = normalizeSettings(settings);
       state.settings = clean;
       write(F.setDoc(userDoc('meta', 'settings'), clean));
+      return clean;
+    },
+
+    async listEvents() { return sorted(state.events); },
+    async getDiscover() { return structuredClone(state.discover); },
+    async saveDiscover(discover) {
+      const clean = normalizeDiscover(discover);
+      state.discover = clean;
+      write(F.setDoc(userDoc('meta', 'discover'), clean));
       return clean;
     },
 
