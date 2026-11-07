@@ -6,7 +6,7 @@ import {
   SPORTS, REG_STATUSES, DIVISION_SUGGESTIONS, CLASS_SUGGESTIONS,
   normalizeMatch, normalizeResult, validateMatch, validateResult,
   buildBackup, parseBackup, parseYMD, isPast, hasStarted, sortKey,
-  normalizeClub, validateClub,
+  normalizeClub, validateClub, newId,
 } from './model.js';
 import { store, localStore, useBackend } from './store.js';
 import { firebaseConfig } from './firebase-config.js';
@@ -14,6 +14,9 @@ import { startFirebase, createCloudStore, authErrorMessage, EMULATOR_CONFIG } fr
 import { REMINDER_KINDS, LEAD_OPTIONS, RADIUS_OPTIONS, computeReminders, pruneDismissed } from './reminders.js';
 import { MATCH_SOURCES, LINKS_CHECKED } from './sources.js';
 import { seasonOf, filterResults, filterOptions, summarize } from './stats.js';
+import {
+  NEW_DAYS, LEVELS, levelLabel, normalizeTab, filterEvents, followedSet, isFollowed, isNew, newFromClubs, sportChoices, inMyMatches,
+} from './discover.js';
 
 const view = document.getElementById('view');
 
@@ -683,14 +686,18 @@ function showErrors(form, errors) {
 }
 
 // fromClubId: start a new match pre-filled from a saved club (Discover → "Add match").
-async function renderMatchForm(id, fromClubId = null) {
-  const [all, clubs] = await Promise.all([store.list(), store.listClubs()]);
+async function renderMatchForm(id, fromClubId = null, fromEventId = null) {
+  const [all, clubs, events] = await Promise.all([store.list(), store.listClubs(), fromEventId ? store.listEvents() : []]);
   const existing = id ? all.find((m) => m.id === id) : null;
   if (id && !existing) return renderNotFound();
   const fromClub = fromClubId ? clubs.find((c) => c.id === fromClubId) : null;
+  const fromEvent = fromEventId ? events.find((e) => e.id === fromEventId) : null;
   const m = existing || normalizeMatch(fromClub
     ? { club: fromClub.name, location: fromClub.location, sport: fromClub.sports[0] }
-    : {});
+    : fromEvent
+      ? { name: fromEvent.name, sport: fromEvent.sport, club: fromEvent.club, location: fromEvent.location,
+        startDate: fromEvent.startDate, endDate: fromEvent.endDate, regLink: fromEvent.link, regStatus: 'interested' }
+      : {});
   const sports = SPORTS.includes(m.sport) ? SPORTS : [...SPORTS, m.sport];
 
   view.innerHTML = `
@@ -738,7 +745,7 @@ async function renderMatchForm(id, fromClubId = null) {
   `;
 
   const form = view.querySelector('#f');
-  view.querySelector('#cancel').onclick = () => goBack(existing ? href('match', id) : fromClub ? '#discover' : '#upcoming');
+  view.querySelector('#cancel').onclick = () => goBack(existing ? href('match', id) : (fromClub || fromEvent) ? '#discover' : '#upcoming');
 
   // Picking a saved club fills in its location if that's still empty.
   form.elements.club.addEventListener('change', () => {
@@ -859,8 +866,77 @@ function clubCard(c) {
   </div>`;
 }
 
+// ---- Discover: your custom lists of match listings ---------------------------------
+
+const DISCOVER_TAB_KEY = 'matchTracker.discoverTab.v1'; // which tab is open, per device
+const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+
+function linkLabel(url) {
+  if (/practiscore\.com/i.test(url)) return 'PractiScore ↗';
+  if (/uspsa\.org/i.test(url)) return 'USPSA.org ↗';
+  return 'Details ↗';
+}
+
+function eventWhen(ev, today) {
+  if (!ev.startDate) return '';
+  if (ev.startDate < today) return 'Under way';
+  const d = daysUntil(ev.startDate, clock());
+  return d === 0 ? 'Today' : d === 1 ? 'Tomorrow' : `In ${d} days`;
+}
+
+function eventCard(ev, { today, followed, matches, dismissable = false }) {
+  const sub = [[ev.sport, levelLabel(ev.level)].filter(Boolean).join(' '), ev.club].filter(Boolean).join(' · ');
+  const saved = inMyMatches(ev, matches);
+  const thisYear = today.slice(0, 4);
+  return `<div class="card match-card event-card">
+    ${dateBox(ev, { showYear: Boolean(ev.startDate) && ev.startDate.slice(0, 4) !== thisYear })}
+    <div class="card-body">
+      <div class="card-title">${esc(ev.name)}</div>
+      ${sub ? `<div class="card-sub">${esc(sub)}</div>` : ''}
+      ${ev.location ? `<div class="card-sub">${esc(ev.location)}</div>` : ''}
+      <div class="card-meta">
+        ${isNew(ev, today) && isFollowed(ev, followed) ? '<span class="pill pill-needs">New</span>' : ''}
+        ${ev.status ? `<span class="pill ${/open/i.test(ev.status) ? 'pill-registered' : 'pill-muted'}">${esc(cap(ev.status))}</span>` : ''}
+        ${saved ? '<span class="pill pill-interested">In my matches</span>' : ''}
+        <span class="when">${esc(eventWhen(ev, today))}</span>
+      </div>
+      <div class="reminder-actions">
+        ${ev.link ? `<a class="btn small" href="${esc(ev.link)}" target="_blank" rel="noopener noreferrer">${linkLabel(ev.link)}</a>` : ''}
+        ${saved ? '' : `<a class="btn small" href="${href('new', 'event', ev.id)}">Add to my matches</a>`}
+        ${dismissable ? `<button class="btn small quiet" type="button" data-dismiss="${esc(ev.id)}">Dismiss</button>` : ''}
+      </div>
+    </div>
+  </div>`;
+}
+
+function describeFilter(f) {
+  return [
+    f.sports.length ? f.sports.join(', ') : 'All sports',
+    f.levels.length ? f.levels.map(levelLabel).join(', ') : '',
+    f.followedOnly ? 'clubs you follow' : '',
+    f.states.length ? f.states.join(', ') : '',
+    f.text ? `name contains "${f.text}"` : '',
+  ].filter(Boolean).join(' · ');
+}
+
+function refreshLine(discover) {
+  const when = discover.lastRefresh ? `Listings last refreshed ${fmtDate(discover.lastRefresh)}.` : 'No listings yet.';
+  return `${esc(when)} They don't update by themselves: ask Claude to refresh Discover.${discover.refreshNote ? ' ' + esc(discover.refreshNote) : ''}`;
+}
+
 async function renderDiscover() {
-  const [clubs, settings] = await Promise.all([store.listClubs(), store.getSettings()]);
+  const [clubs, settings, discover, events, matches] = await Promise.all([
+    store.listClubs(), store.getSettings(), store.getDiscover(), store.listEvents(), store.list(),
+  ]);
+  const today = ymdOf(clock());
+  const followed = followedSet(discover, clubs);
+  const fresh = newFromClubs(events, followed, discover, today);
+  let activeId = '';
+  try { activeId = localStorage.getItem(DISCOVER_TAB_KEY) || ''; } catch { /* first tab then */ }
+  const tab = discover.tabs.find((t) => t.id === activeId) || discover.tabs[0];
+  const listed = tab ? filterEvents(events, tab.filter, followed, today) : [];
+  const ctx = { today, followed, matches };
+
   const radius = settings.travelRadius;
   const sorted = [...clubs].sort((a, b) =>
     (b.favorite - a.favorite) || ((a.miles ?? Infinity) - (b.miles ?? Infinity)) || a.name.localeCompare(b.name));
@@ -869,8 +945,25 @@ async function renderDiscover() {
   const unchecked = MATCH_SOURCES.flatMap((g) => g.links).filter((l) => !l.checked);
 
   view.innerHTML = `
-    <div class="page-head"><h2>Discover</h2></div>
-    <p class="muted">Find matches on these official sites, then save the ones you want with <a href="#new">+ Add match</a>. Listings aren't pulled in automatically, because none of these sites offers a way to do that.</p>
+    <div class="page-head"><h2>Discover</h2><a class="small-link" href="#discover/tabs">Edit tabs</a></div>
+
+    ${fresh.length ? `
+      <h3 class="section-label">New from your clubs</h3>
+      <p class="fine">Posted in the last ${NEW_DAYS} days by clubs you follow.</p>
+      <div class="list new-list">${fresh.map((ev) => eventCard(ev, { ...ctx, dismissable: true })).join('')}</div>` : ''}
+
+    ${discover.tabs.length ? `
+      <div class="tab-chips" role="tablist" aria-label="Your lists">
+        ${discover.tabs.map((t) => `<button type="button" role="tab" class="chip" data-tab-id="${esc(t.id)}" aria-selected="${t === tab}">${esc(t.name)}</button>`).join('')}
+      </div>
+      <div role="tabpanel" aria-label="${esc(tab.name)}">
+        <p class="fine">${esc(describeFilter(tab.filter))} · ${listed.length} upcoming</p>
+        ${listed.length ? `<div class="list">${listed.map((ev) => eventCard(ev, ctx)).join('')}</div>`
+          : `<div class="empty"><p>${events.length ? 'No upcoming matches fit this list.' : 'No listings yet.'}</p>
+             <p class="muted">${events.length ? 'Change what it shows with <a href="#discover/tabs">Edit tabs</a>.' : 'They appear here after the first refresh.'}</p></div>`}
+      </div>`
+    : `<div class="empty"><p>No lists yet.</p><a class="btn" href="#discover/tabs">Add a list</a></div>`}
+    <p class="fine">${refreshLine(discover)}</p>
 
     <h3 class="section-label">Search for matches</h3>
     <div class="source-groups">
@@ -886,6 +979,7 @@ async function renderDiscover() {
       ? ` ${unchecked.map((l) => esc(l.title)).join(', ')} couldn't be checked automatically.` : ''}</p>
 
     <div class="section-row"><h3 class="section-label">My clubs</h3><a class="small-link" href="#club/new">+ Add club</a></div>
+    <p class="fine">Clubs here count as clubs you follow for the lists and reminders above.</p>
     ${clubs.length ? `
       <label class="filter radius-filter"><span>Show clubs within</span>
         <select id="radius">${RADIUS_OPTIONS.map((r) =>
@@ -897,6 +991,23 @@ async function renderDiscover() {
     : `<div class="empty"><p>No clubs saved yet.</p><p class="muted">Use the club finders above, then tap <strong>+ Add club</strong> to keep the ones you like here.</p></div>`}
   `;
 
+  view.querySelectorAll('[data-tab-id]').forEach((b) => {
+    b.onclick = () => {
+      try { localStorage.setItem(DISCOVER_TAB_KEY, b.dataset.tabId); } catch { /* stays on first tab next time */ }
+      renderDiscover().catch(showError);
+    };
+  });
+  view.querySelectorAll('[data-dismiss]').forEach((b) => {
+    b.onclick = async () => {
+      try {
+        const latest = await store.getDiscover();
+        const ids = new Set(events.map((e) => e.id));
+        const kept = Object.fromEntries(Object.entries(latest.dismissedNew).filter(([k]) => ids.has(k)));
+        await store.saveDiscover({ ...latest, dismissedNew: { ...kept, [b.dataset.dismiss]: true } });
+        renderDiscover();
+      } catch (err) { showError(err); }
+    };
+  });
   const sel = view.querySelector('#radius');
   if (sel) {
     sel.onchange = async () => {
@@ -906,6 +1017,102 @@ async function renderDiscover() {
       } catch (err) { showError(err); }
     };
   }
+}
+
+function tabFields(t, i, count, sports) {
+  const f = t.filter;
+  const check = (name, value, label, on) =>
+    `<label class="check"><input type="checkbox" name="${name}" value="${esc(String(value))}"${on ? ' checked' : ''}> ${esc(label)}</label>`;
+  return `<fieldset class="panel tab-edit" data-i="${i}">
+    <legend>Tab ${i + 1}</legend>
+    ${field({ name: `name-${i}`, label: 'Tab name', value: t.name, required: true, attrs: 'autocomplete="off"' })}
+    <div class="field"><span class="label">Sports (none checked = all)</span>
+      <div class="checks">${sports.map((s) => check(`sports-${i}`, s, s, f.sports.includes(s))).join('')}</div></div>
+    <div class="field"><span class="label">Match level (none checked = all)</span>
+      <div class="checks">${LEVELS.map((n) => check(`levels-${i}`, n, levelLabel(n), f.levels.includes(n))).join('')}</div></div>
+    <label class="check"><input type="checkbox" name="followed-${i}"${f.followedOnly ? ' checked' : ''}> Only clubs I follow</label>
+    ${field({ name: `states-${i}`, label: 'States (optional)', value: f.states.join(', '), hint: '2-letter codes, for example IN, KY, OH. Empty = all states.', attrs: 'autocomplete="off" autocapitalize="characters"' })}
+    ${field({ name: `text-${i}`, label: 'Name contains (optional)', value: f.text, attrs: 'autocomplete="off"' })}
+    <div class="reminder-actions">
+      <button class="btn small" type="button" data-act="up" data-i="${i}"${i === 0 ? ' disabled' : ''}>Move up</button>
+      <button class="btn small" type="button" data-act="down" data-i="${i}"${i === count - 1 ? ' disabled' : ''}>Move down</button>
+      <button class="btn small danger" type="button" data-act="delete" data-i="${i}">Delete tab</button>
+    </div>
+  </fieldset>`;
+}
+
+async function renderDiscoverTabs() {
+  const [discover, events, clubs] = await Promise.all([store.getDiscover(), store.listEvents(), store.listClubs()]);
+  const sports = sportChoices(SPORTS, events);
+  let tabs = structuredClone(discover.tabs);
+
+  const readForm = (form) => tabs.map((t, i) => normalizeTab({
+    id: t.id,
+    name: form.elements[`name-${i}`].value.trim(),
+    filter: {
+      sports: [...form.querySelectorAll(`input[name="sports-${i}"]:checked`)].map((x) => x.value),
+      levels: [...form.querySelectorAll(`input[name="levels-${i}"]:checked`)].map((x) => Number(x.value)),
+      followedOnly: form.elements[`followed-${i}`].checked,
+      states: form.elements[`states-${i}`].value,
+      text: form.elements[`text-${i}`].value.trim(),
+    },
+  }));
+  // normalizeTab turns an empty name into 'Untitled'; keep it empty so Save can ask for one.
+  const namesOf = (form) => tabs.map((t, i) => form.elements[`name-${i}`].value.trim());
+
+  const draw = () => {
+    view.innerHTML = `
+      <div class="page-head"><h2>Edit tabs</h2></div>
+      <p class="muted">Each tab lists upcoming matches from the Discover listings that fit its choices.</p>
+      <form id="f" class="form" novalidate>
+        ${tabs.map((t, i) => tabFields(t, i, tabs.length, sports)).join('') || '<p class="muted">No tabs. Add one below.</p>'}
+        <button class="btn" type="button" id="add">+ Add a tab</button>
+        <div class="form-actions">
+          <button class="btn primary" type="submit">Save tabs</button>
+          <button class="btn" type="button" id="cancel">Cancel</button>
+        </div>
+      </form>
+      <h3 class="section-label">Clubs you follow</h3>
+      <p class="fine">"Only clubs I follow" uses these PractiScore follows (saved at the last refresh) plus every club under My clubs on Discover.</p>
+      <div class="panel"><p>${discover.followedClubs.length
+        ? discover.followedClubs.map((c) => esc(c.name)).join(' · ')
+        : 'No PractiScore follows saved yet.'}</p>
+      <p class="fine">My clubs: ${clubs.length ? clubs.map((c) => esc(c.name)).join(' · ') : 'none'}</p></div>
+    `;
+    const form = view.querySelector('#f');
+    view.querySelector('#add').onclick = () => {
+      tabs = readForm(form);
+      tabs.push(normalizeTab({ id: 'tab-' + newId().slice(0, 8), name: 'New tab' }));
+      draw();
+      view.querySelector(`[name="name-${tabs.length - 1}"]`)?.select();
+    };
+    view.querySelectorAll('[data-act]').forEach((b) => {
+      b.onclick = () => {
+        tabs = readForm(form);
+        const i = Number(b.dataset.i);
+        if (b.dataset.act === 'delete') tabs.splice(i, 1);
+        if (b.dataset.act === 'up' && i > 0) [tabs[i - 1], tabs[i]] = [tabs[i], tabs[i - 1]];
+        if (b.dataset.act === 'down' && i < tabs.length - 1) [tabs[i + 1], tabs[i]] = [tabs[i], tabs[i + 1]];
+        draw();
+      };
+    });
+    view.querySelector('#cancel').onclick = () => goBack('#discover');
+    form.onsubmit = async (e) => {
+      e.preventDefault();
+      const next = readForm(form);
+      const errors = {};
+      namesOf(form).forEach((n, i) => { if (!n) errors[`name-${i}`] = 'Give the tab a name.'; });
+      showErrors(form, errors);
+      if (Object.keys(errors).length) return;
+      try {
+        const latest = await store.getDiscover();
+        await store.saveDiscover({ ...latest, tabs: next });
+        toast('Tabs saved');
+        location.replace('#discover');
+      } catch (err) { showError(err); }
+    };
+  };
+  draw();
 }
 
 async function renderClubForm(id) {
@@ -1128,10 +1335,12 @@ const routes = [
   [/^#settings$/, renderSettings, 'settings'],
   [/^#data$/, () => location.replace('#settings')], // old address from step 1
   [/^#discover$/, renderDiscover, 'discover'],
+  [/^#discover\/tabs$/, renderDiscoverTabs, 'discover'],
   [/^#club\/new$/, () => renderClubForm(null)],
   [/^#club\/([^/]+)$/, renderClubForm],
   [/^#new$/, () => renderMatchForm(null)],
   [/^#new\/club\/([^/]+)$/, (clubId) => renderMatchForm(null, clubId)],
+  [/^#new\/event\/([^/]+)$/, (eventId) => renderMatchForm(null, null, eventId)],
   [/^#match\/([^/]+)$/, renderDetail],
   [/^#edit\/([^/]+)$/, renderMatchForm],
   [/^#result\/([^/]+)$/, renderResultForm],
@@ -1178,7 +1387,7 @@ const sync = { mode: 'local', fb: null, user: null, cloud: null, pending: false,
 // Another device changed something: redraw, except on a form you're filling in.
 function onRemoteChange() {
   const hash = location.hash || '#upcoming';
-  if (/^#(new|edit|result|club)/.test(hash)) refreshReminders().catch(console.error);
+  if (/^#(new|edit|result|club|discover\/tabs)/.test(hash)) refreshReminders().catch(console.error);
   else renderCurrent({ fresh: false });
 }
 
