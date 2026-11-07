@@ -5,10 +5,13 @@
 
 import { normalizeMatch, normalizeClub, newId } from './model.js';
 import { normalizeSettings } from './reminders.js';
+import { normalizeDiscover, normalizeEvent } from './discover.js';
 
 const MATCHES_KEY = 'matchTracker.matches.v1';
 const CLUBS_KEY = 'matchTracker.clubs.v1';
 const SETTINGS_KEY = 'matchTracker.settings.v1';
+const EVENTS_KEY = 'matchTracker.discoverEvents.v1';
+const DISCOVER_KEY = 'matchTracker.discover.v1';
 const PRE_RESTORE_KEY = 'matchTracker.preRestore.v2';
 
 function readList(key, normalize) {
@@ -116,6 +119,27 @@ export const localStore = {
       localStorage.setItem(SETTINGS_KEY, JSON.stringify(clean));
     } catch {
       throw new Error("Couldn't save settings on this device (storage is full or blocked).");
+    }
+    return clean;
+  },
+
+  // ---- Discover: listings found by a refresh, and your custom tabs
+  async listEvents() {
+    try { return readList(EVENTS_KEY, normalizeEvent); } catch { return []; }
+  },
+  async getDiscover() {
+    try {
+      return normalizeDiscover(JSON.parse(localStorage.getItem(DISCOVER_KEY) || 'null'));
+    } catch {
+      return normalizeDiscover(null);
+    }
+  },
+  async saveDiscover(discover) {
+    const clean = normalizeDiscover(discover);
+    try {
+      localStorage.setItem(DISCOVER_KEY, JSON.stringify(clean));
+    } catch {
+      throw new Error("Couldn't save your Discover tabs on this device (storage is full or blocked).");
     }
     return clean;
   },
