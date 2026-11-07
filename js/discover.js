@@ -6,10 +6,11 @@
 // those pages in your browser) adds new ones and stamps when each was first seen.
 //
 // A tab is a saved filter over those events. You can add, rename, reorder and
-// delete tabs on the Discover tab ("Edit tabs").
+// delete tabs on the Discover tab ("Edit tabs"), and tick "Notify me" on a tab to
+// have its newly posted matches collected under the New tab (with a count badge).
 
 export const LEVELS = [1, 2, 3];
-export const NEW_DAYS = 7; // "new from your clubs" = first seen within this many days
+export const NEW_DAYS = 7; // "new" = first seen within this many days
 
 const ROMAN = { 1: 'I', 2: 'II', 3: 'III' };
 export const levelLabel = (n) => (ROMAN[n] ? `Level ${ROMAN[n]}` : '');
@@ -70,12 +71,15 @@ export function normalizeFilter(raw = {}) {
 }
 
 export function normalizeTab(raw = {}) {
-  return { id: str(raw.id), name: str(raw.name) || 'Untitled', filter: normalizeFilter(raw.filter) };
+  return {
+    id: str(raw.id), name: str(raw.name) || 'Untitled', filter: normalizeFilter(raw.filter),
+    notify: raw.notify === true || raw.notify === 'on' || raw.notify === 'true',
+  };
 }
 
 export const DEFAULT_TABS = [
-  { id: 'uspsa-l2-l3', name: 'USPSA Level II & III', filter: { sports: ['USPSA'], levels: [2, 3] } },
-  { id: 'my-clubs', name: 'My clubs', filter: { followedOnly: true } },
+  { id: 'uspsa-l2-l3', name: 'USPSA Level II & III', filter: { sports: ['USPSA'], levels: [2, 3] }, notify: true },
+  { id: 'my-clubs', name: 'My clubs', filter: { followedOnly: true }, notify: true },
 ];
 
 export function normalizeDiscover(raw) {
@@ -134,22 +138,24 @@ export function isFollowed(ev, followed) {
 
 const lastDay = (ev) => ev.endDate || ev.startDate;
 
-// Events for one tab: upcoming (or still running) on `today`, earliest first.
-export function filterEvents(events, filter, followed, today) {
+// Does one listing fit a tab's filter? (upcoming or still running on `today`)
+export function fitsFilter(ev, filter, followed, today) {
   const f = normalizeFilter(filter);
   const words = f.text.toLowerCase().split(/\s+/).filter(Boolean);
-  return events
-    .filter((ev) => !lastDay(ev) || lastDay(ev) >= today)
-    .filter((ev) => !f.sports.length || f.sports.includes(ev.sport))
-    .filter((ev) => !f.levels.length || f.levels.includes(ev.level) || (majorUnknown(ev) && f.levels.some((n) => n >= 2)))
-    .filter((ev) => !f.followedOnly || isFollowed(ev, followed))
-    .filter((ev) => !f.states.length || f.states.includes(ev.state))
-    .filter((ev) => {
-      if (!words.length) return true;
-      const hay = `${ev.name} ${ev.club} ${ev.location} ${ev.category}`.toLowerCase();
-      return words.every((w) => hay.includes(w));
-    })
-    .sort((a, b) => (a.startDate || '9999').localeCompare(b.startDate || '9999') || a.name.localeCompare(b.name));
+  const hay = `${ev.name} ${ev.club} ${ev.location} ${ev.category}`.toLowerCase();
+  return (!lastDay(ev) || lastDay(ev) >= today)
+    && (!f.sports.length || f.sports.includes(ev.sport))
+    && (!f.levels.length || f.levels.includes(ev.level) || (majorUnknown(ev) && f.levels.some((n) => n >= 2)))
+    && (!f.followedOnly || isFollowed(ev, followed))
+    && (!f.states.length || f.states.includes(ev.state))
+    && words.every((w) => hay.includes(w));
+}
+
+const byDate = (a, b) => (a.startDate || '9999').localeCompare(b.startDate || '9999') || a.name.localeCompare(b.name);
+
+// Events for one tab, earliest first.
+export function filterEvents(events, filter, followed, today) {
+  return events.filter((ev) => fitsFilter(ev, filter, followed, today)).sort(byDate);
 }
 
 function daysBetween(fromYmd, toYmd) {
@@ -166,6 +172,19 @@ export function newFromClubs(events, followed, discover, today) {
     .filter((ev) => daysBetween(ev.firstSeen, today) <= NEW_DAYS && daysBetween(ev.firstSeen, today) >= 0)
     .filter((ev) => !lastDay(ev) || lastDay(ev) >= today)
     .sort((a, b) => b.firstSeen.localeCompare(a.firstSeen) || (a.startDate || '').localeCompare(b.startDate || ''));
+}
+
+// Notifications: newly posted listings (first seen in the last NEW_DAYS days, not
+// dismissed) that fit at least one tab with "Notify me" ticked. Each comes with the
+// names of the tabs it fits. Newest first.
+export function notifications(events, discover, followed, today) {
+  const tabs = discover.tabs.filter((t) => t.notify);
+  if (!tabs.length) return [];
+  return events
+    .filter((ev) => isNew(ev, today) && daysBetween(ev.firstSeen, today) >= 0 && !discover.dismissedNew[ev.id])
+    .map((ev) => ({ ev, tabs: tabs.filter((t) => fitsFilter(ev, t.filter, followed, today)).map((t) => t.name) }))
+    .filter((n) => n.tabs.length)
+    .sort((a, b) => b.ev.firstSeen.localeCompare(a.ev.firstSeen) || byDate(a.ev, b.ev));
 }
 
 export function isNew(ev, today) {
