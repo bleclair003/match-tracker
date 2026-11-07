@@ -358,6 +358,15 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); ou
 .chip[aria-selected="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
 .chip:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
 .new-list .card { border-color: var(--accent); }
+.chip .chip-count {
+  display: inline-block; min-width: 20px; margin-left: 4px; padding: 0 6px; border-radius: 999px;
+  background: var(--accent); color: var(--accent-text); font-size: .75rem; font-weight: 800; line-height: 20px; text-align: center;
+}
+.chip[aria-selected="true"] .chip-count { background: var(--accent-text); color: var(--accent); }
+.chip .bell { font-size: .8rem; margin-left: 2px; }
+.in-tabs { font-weight: 600; }
+.notify-check { color: var(--text); }
+.dismiss-all { margin-top: 10px; }
 .tab-edit legend { color: var(--muted); font-size: .85rem; }
 
 @media (max-width: 360px) {
