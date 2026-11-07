@@ -1,6 +1,6 @@
 # Match Tracker
 
-A personal web app for tracking shooting matches (USPSA, IDPA, Steel Challenge, and others) and results.
+A personal web app for tracking USPSA and PCSL shooting matches and results.
 It's plain HTML, CSS and JavaScript with no build step, so you can open a file, change it, and reload.
 
 ## Run it on your laptop
@@ -56,14 +56,14 @@ The app opens without signal once it has been opened online at least once.
 | `js/app.js` | The screens (Upcoming, Progress, Settings, match detail, forms), the match % chart, and the router |
 
 Common changes:
-- **Add a sport:** edit `SPORTS` in `model.js`.
+- **Add a sport:** edit `SPORTS` in `model.js` (currently only USPSA and PCSL, by choice), and add its links to `sources.js`.
 - **Add division or class suggestions:** edit `DIVISION_SUGGESTIONS` and `CLASS_SUGGESTIONS` in `model.js`.
 - **Change colors:** edit the variables at the top of `styles.css`.
 - **Change reminder defaults or choices:** edit `defaultSettings()` and `LEAD_OPTIONS` in `reminders.js`.
 
 ## Discover tab
 
-- **Search for matches:** links to official match listings and club finders for PractiScore, USPSA, IDPA, Steel Challenge and PCSL. Nothing is imported automatically: none of these sites offers an API or data feed, and PractiScore and uspsa.org block automated requests.
+- **Search for matches:** links to official match listings and club finders for USPSA and PCSL, plus PractiScore (where most of their local matches take registration). Only these two organizations are listed, by choice. Nothing is imported automatically: none of these sites offers an API or data feed, and PractiScore and uspsa.org block automated requests.
   - All links were opened by hand on 2026-11-06, except **PractiScore match search**. PractiScore shows a "verify you are human" page to automated checks. Open it once yourself, and if it works, set `checked: true` in `sources.js`.
   - pcsl.org is a soccer league. The shooting league is pcsleague.us, and its site has no match finder.
 - **My clubs:** clubs your dad saves himself. Each has its sports, an address, miles from home, a link, notes and a favorite star. Favorites sort first, then by distance.
