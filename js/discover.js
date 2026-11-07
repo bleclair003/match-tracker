@@ -14,6 +14,11 @@ export const NEW_DAYS = 7; // "new from your clubs" = first seen within this man
 const ROMAN = { 1: 'I', 2: 'II', 3: 'III' };
 export const levelLabel = (n) => (ROMAN[n] ? `Level ${ROMAN[n]}` : '');
 
+// USPSA's major-match list (source 'uspsa-major') only promises "Level II or III";
+// for those without a known level, show that and count them for either level.
+const majorUnknown = (ev) => ev.level == null && ev.source === 'uspsa-major';
+export const eventLevelLabel = (ev) => (ev.level ? levelLabel(ev.level) : majorUnknown(ev) ? 'Level II or III' : '');
+
 const str = (v) => (v == null ? '' : String(v).trim());
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const date = (v) => (DATE_RE.test(str(v)) ? str(v) : '');
@@ -136,7 +141,7 @@ export function filterEvents(events, filter, followed, today) {
   return events
     .filter((ev) => !lastDay(ev) || lastDay(ev) >= today)
     .filter((ev) => !f.sports.length || f.sports.includes(ev.sport))
-    .filter((ev) => !f.levels.length || f.levels.includes(ev.level))
+    .filter((ev) => !f.levels.length || f.levels.includes(ev.level) || (majorUnknown(ev) && f.levels.some((n) => n >= 2)))
     .filter((ev) => !f.followedOnly || isFollowed(ev, followed))
     .filter((ev) => !f.states.length || f.states.includes(ev.state))
     .filter((ev) => {
