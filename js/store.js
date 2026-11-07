@@ -1,6 +1,7 @@
-// store.js — where records are saved. For now: this browser only
-// (localStorage). Every method is async on purpose, so a synced store (step 6)
-// can replace this one without changing the screens.
+// store.js — where records are saved. `store` is what the screens use. It starts
+// as `localStore` (this browser only, localStorage). When sync is set up and
+// someone signs in, app.js swaps in the cloud store from cloud.js with
+// useBackend(). Every method is async so the screens don't care which one it is.
 
 import { normalizeMatch, normalizeClub, newId } from './model.js';
 import { normalizeSettings } from './reminders.js';
@@ -47,7 +48,7 @@ function upsert(key, normalize, item) {
   return rec;
 }
 
-export const store = {
+export const localStore = {
   kind: 'local',
 
   isAvailable() {
@@ -118,4 +119,27 @@ export const store = {
     }
     return clean;
   },
+
+  // ---- moving device-only data into a synced account
+  hasData() {
+    const n = (key) => { try { return (JSON.parse(localStorage.getItem(key) || '[]') || []).length; } catch { return 0; } };
+    return n(MATCHES_KEY) + n(CLUBS_KEY) > 0;
+  },
+  // After copying to the account, keep the old copy under another name (a safety net)
+  // so it isn't offered again.
+  archiveAfterCopy() {
+    for (const key of [MATCHES_KEY, CLUBS_KEY]) {
+      const v = localStorage.getItem(key);
+      if (v != null) localStorage.setItem(key + '.copiedToAccount', v);
+      localStorage.removeItem(key);
+    }
+  },
 };
+
+// The store the screens use. Starts as the local store.
+export const store = { ...localStore };
+
+export function useBackend(backend) {
+  for (const k of Object.keys(store)) delete store[k];
+  Object.assign(store, backend);
+}

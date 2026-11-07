@@ -8,7 +8,9 @@ import {
   buildBackup, parseBackup, parseYMD, isPast, hasStarted, sortKey,
   normalizeClub, validateClub,
 } from './model.js';
-import { store } from './store.js';
+import { store, localStore, useBackend } from './store.js';
+import { firebaseConfig } from './firebase-config.js';
+import { startFirebase, createCloudStore, authErrorMessage, EMULATOR_CONFIG } from './cloud.js';
 import { REMINDER_KINDS, LEAD_OPTIONS, RADIUS_OPTIONS, computeReminders, pruneDismissed } from './reminders.js';
 import { MATCH_SOURCES, LINKS_CHECKED } from './sources.js';
 import { seasonOf, filterResults, filterOptions, summarize } from './stats.js';
@@ -200,6 +202,10 @@ function reminderCard(r, now) {
 
 // Recomputes reminders: updates the tab badge always, and the list when Upcoming is showing.
 async function refreshReminders() {
+  if (sync.mode === 'cloud' && !sync.user) {
+    document.getElementById('badge').hidden = true;
+    return;
+  }
   const [all, settings] = await Promise.all([store.list(), store.getSettings()]);
   const now = clock();
   const due = computeReminders(all, settings, now);
@@ -988,10 +994,27 @@ async function renderSettings() {
       ${dismissedCount ? `<button class="btn wide" id="undismiss" type="button">Show ${dismissedCount} dismissed reminder${dismissedCount === 1 ? '' : 's'} again</button>` : ''}
     </section>
 
+    ${sync.mode === 'cloud' ? `
+    <section class="panel">
+      <h3>Account &amp; sync</h3>
+      <p>Signed in as <strong>${esc(sync.user?.email || '')}</strong>${sync.emulator ? ' (test emulator)' : ''}.</p>
+      <p class="muted" id="sync-status">${esc(syncStatusText())}</p>
+      <p class="muted">Changes save on this device right away, work without signal, and sync to your other signed-in devices when online.</p>
+      <button class="btn" id="signout" type="button">Sign out on this device</button>
+    </section>
+    ${localStore.hasData() ? `
+    <section class="panel">
+      <h3>Data from before sign-in</h3>
+      <p class="muted">This device still has matches or clubs that were saved before you signed in. They aren't in your account yet.</p>
+      <button class="btn primary" id="copy-local" type="button">Copy them to my account</button>
+    </section>` : ''}` : ''}
+
     <section class="panel">
       <h3>Your data</h3>
       <p><strong>${all.length}</strong> match${all.length === 1 ? '' : 'es'}, <strong>${withResults}</strong> with results, <strong>${clubs.length}</strong> saved club${clubs.length === 1 ? '' : 's'}.</p>
-      <p class="muted">Right now your data is saved only in this browser on this device. It does not sync between your phone and laptop yet, and it is not sent anywhere. Export a backup now and then so you have a copy you can restore.</p>
+      <p class="muted">${sync.mode === 'cloud'
+        ? 'Stored in your Firebase account, which only you can sign in to. A backup file is still a good idea before big changes.'
+        : 'Saved only in this browser on this device. It does not sync and is not sent anywhere. Export a backup now and then so you have a copy you can restore.'}</p>
     </section>
 
     <section class="panel">
@@ -1021,6 +1044,9 @@ async function renderSettings() {
       } catch (err) { showError(err); }
     };
   });
+
+  view.querySelector('#signout')?.addEventListener('click', signOutHere);
+  view.querySelector('#copy-local')?.addEventListener('click', () => copyDeviceDataToAccount().catch(showError));
 
   const undismiss = view.querySelector('#undismiss');
   if (undismiss) {
@@ -1111,7 +1137,14 @@ const routes = [
   [/^#result\/([^/]+)$/, renderResultForm],
 ];
 
-async function route() {
+// Draws whatever the address bar points at. `fresh` = a real navigation (count it
+// for Back, scroll to top); a redraw after another device's change keeps your place.
+async function renderCurrent({ fresh = true } = {}) {
+  if (sync.mode === 'cloud' && !sync.user) {
+    renderSignIn();
+    return;
+  }
+  document.body.classList.remove('signed-out');
   const hash = location.hash || '#upcoming';
   const hit = routes.find(([re]) => re.test(hash));
   if (!hit) {
@@ -1119,24 +1152,179 @@ async function route() {
     return;
   }
   const [re, render, tab] = hit;
-  navCount += 1;
+  if (fresh) navCount += 1;
   if (tab) {
     document.querySelectorAll('.tabbar a').forEach((a) => {
       a.toggleAttribute('aria-current', a.dataset.tab === tab);
     });
   }
+  const y = window.scrollY;
   try {
     await render(...hash.match(re).slice(1).map(decodeURIComponent));
     if (render !== renderUpcoming) await refreshReminders(); // keeps the tab badge current
   } catch (err) {
     showError(err);
   }
-  window.scrollTo(0, 0);
+  window.scrollTo(0, fresh ? 0 : y);
+}
+const route = () => renderCurrent({ fresh: true });
+
+// ---- sync (Firebase) --------------------------------------------------------------
+
+// mode 'local': no Firebase config, data stays in this browser.
+// mode 'cloud': Firebase config present; you must sign in, data syncs.
+const sync = { mode: 'local', fb: null, user: null, cloud: null, pending: false, emulator: false };
+
+// Another device changed something: redraw, except on a form you're filling in.
+function onRemoteChange() {
+  const hash = location.hash || '#upcoming';
+  if (/^#(new|edit|result|club)/.test(hash)) refreshReminders().catch(console.error);
+  else renderCurrent({ fresh: false });
 }
 
-if (!store.isAvailable()) {
-  showBanner("This browser is blocking storage (private browsing?), so changes can't be saved here.");
-} else if (TEST_NOW) {
+function onSyncStatus({ pending }) {
+  sync.pending = pending;
+  const el = document.getElementById('sync-status');
+  if (el) el.textContent = syncStatusText();
+}
+
+function syncStatusText() {
+  if (!navigator.onLine) return 'Offline. Changes are saved on this device and will upload when you have signal.';
+  return sync.pending ? 'Uploading changes…' : 'All changes synced.';
+}
+
+function onSyncError(err) {
+  const code = err?.code || '';
+  const msg = code === 'permission-denied'
+    ? "Sync problem: the database refused access. Check the security rules in the Firebase console (see SETUP-SYNC.md)."
+    : `Sync problem: ${err?.message || err}`;
+  showBanner(msg);
+}
+
+function updateNetBanner() {
+  const el = document.getElementById('net-banner');
+  el.hidden = !(sync.mode === 'cloud' && sync.user && !navigator.onLine);
+  onSyncStatus({ pending: sync.pending });
+}
+window.addEventListener('online', updateNetBanner);
+window.addEventListener('offline', updateNetBanner);
+
+function renderSignIn() {
+  document.body.classList.add('signed-out');
+  view.innerHTML = `
+    <div class="signin">
+      <h2>Sign in</h2>
+      <p class="muted">Sign in to keep your matches in sync between your phone and computer.</p>
+      ${sync.emulator ? '<p class="fine">Test mode: using the local Firebase emulators, not the real account.</p>' : ''}
+      <form id="signin" class="form" novalidate>
+        ${field({ name: 'email', label: 'Email', type: 'email', attrs: 'autocomplete="username" autocapitalize="off" inputmode="email"' })}
+        ${field({ name: 'password', label: 'Password', type: 'password', attrs: 'autocomplete="current-password"' })}
+        <p class="err" id="signin-error" role="alert"></p>
+        <button class="btn primary" type="submit">Sign in</button>
+        <button class="link-btn" type="button" id="reset">Forgot password?</button>
+      </form>
+    </div>`;
+  const form = view.querySelector('#signin');
+  const errEl = view.querySelector('#signin-error');
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    const email = form.elements.email.value.trim();
+    const password = form.elements.password.value;
+    if (!email || !password) { errEl.textContent = 'Enter your email and password.'; return; }
+    const btn = form.querySelector('[type=submit]');
+    btn.disabled = true;
+    btn.textContent = 'Signing in…';
+    try {
+      await sync.fb.A.signInWithEmailAndPassword(sync.fb.auth, email, password);
+      // onAuthStateChanged takes it from here.
+    } catch (err) {
+      errEl.textContent = authErrorMessage(err);
+      btn.disabled = false;
+      btn.textContent = 'Sign in';
+    }
+  };
+  view.querySelector('#reset').onclick = async () => {
+    const email = form.elements.email.value.trim();
+    if (!email) { errEl.textContent = 'Type your email above first, then tap "Forgot password?" again.'; return; }
+    try {
+      await sync.fb.A.sendPasswordResetEmail(sync.fb.auth, email);
+      errEl.textContent = '';
+      toast('If that email has an account, a reset link is on its way.');
+    } catch (err) {
+      errEl.textContent = authErrorMessage(err);
+    }
+  };
+}
+
+async function signOutHere() {
+  if (!confirm('Sign out on this device? Your data stays in your account. This device\'s offline copy is removed.')) return;
+  try {
+    sync.cloud?.detach();
+    await sync.fb.A.signOut(sync.fb.auth);
+    await sync.fb.F.terminate(sync.fb.db);
+    await sync.fb.F.clearIndexedDbPersistence(sync.fb.db);
+  } catch (err) {
+    console.warn(err);
+  }
+  location.reload();
+}
+
+// Copy data saved on this device before sign-in into the account (matched by id, so
+// running it twice doesn't duplicate anything).
+async function copyDeviceDataToAccount() {
+  const [matches, clubs] = await Promise.all([localStore.list(), localStore.listClubs()]);
+  if (!confirm(`Copy ${matches.length} match(es) and ${clubs.length} club(s) from this device into your account?`)) return;
+  for (const m of matches) await store.save(m);
+  for (const c of clubs) await store.saveClub(c);
+  localStore.archiveAfterCopy();
+  toast('Copied to your account');
+  renderSettings();
+  refreshReminders();
+}
+
+async function boot() {
+  const params = new URLSearchParams(location.search);
+  const isLocalhost = ['localhost', '127.0.0.1'].includes(location.hostname);
+  sync.emulator = isLocalhost && params.has('emulator');
+  const config = sync.emulator ? EMULATOR_CONFIG : firebaseConfig;
+
+  if (!config) {
+    if (!localStore.isAvailable()) showBanner("This browser is blocking storage (private browsing?), so changes can't be saved here.");
+    route();
+    return;
+  }
+
+  sync.mode = 'cloud';
+  try {
+    sync.fb = await startFirebase(config, { emulator: sync.emulator });
+  } catch (err) {
+    console.error(err);
+    view.innerHTML = `<div class="panel error-panel"><h2>Couldn't start sync</h2>
+      <p>The sync code didn't load. This happens if the app is opened offline before it has ever been opened online.</p>
+      <button class="btn primary" type="button" onclick="location.reload()">Try again</button></div>`;
+    return;
+  }
+
+  sync.fb.A.onAuthStateChanged(sync.fb.auth, async (user) => {
+    sync.cloud?.detach();
+    sync.cloud = null;
+    sync.user = user;
+    if (!user) {
+      useBackend(localStore);
+      renderCurrent();
+      return;
+    }
+    view.innerHTML = '<p class="muted">Loading your matches…</p>';
+    const cloud = createCloudStore(sync.fb, user.uid, { onRemoteChange, onStatus: onSyncStatus, onError: onSyncError });
+    await cloud.attach();
+    sync.cloud = cloud;
+    useBackend(cloud);
+    updateNetBanner();
+    renderCurrent();
+  });
+}
+
+if (TEST_NOW) {
   showBanner(`Test clock: acting as if it's ${TEST_NOW.toLocaleString()}. Remove "?now=…" from the address to use the real time.`);
 }
 window.addEventListener('hashchange', route);
@@ -1148,11 +1336,11 @@ setInterval(() => {
 }, 60 * 1000);
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) return;
-  if ((location.hash || '#upcoming') === '#upcoming') renderUpcoming().catch(showError);
+  if ((location.hash || '#upcoming') === '#upcoming') renderCurrent({ fresh: false });
   else refreshReminders().catch(console.error);
 });
 
-route();
+boot();
 
 // Offline support + keeping the app current (see sw.js).
 if ('serviceWorker' in navigator) {

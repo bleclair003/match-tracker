@@ -48,6 +48,11 @@ The app opens without signal once it has been opened online at least once.
 | `js/reminders.js` | Decides which reminders are due at a given moment, plus the lead-time options and their defaults |
 | `js/sources.js` | The official match-search and club-finder links on the Discover tab, and the date they were last checked |
 | `js/stats.js` | Filters by season, sport and division, plus the summary numbers for the Progress tab |
+| `js/cloud.js` | Sign-in and synced storage using Firebase (Auth + Firestore with an offline copy on the device) |
+| `js/firebase-config.js` | Your Firebase project's web config. `null` means sync is off and data stays in the browser |
+| `firestore.rules` | Database security rules: each signed-in person can read and write only their own `users/{uid}` data |
+| `firebase.json` | Only used by the local emulators for testing |
+| `SETUP-SYNC.md` | Step-by-step Firebase setup |
 | `js/app.js` | The screens (Upcoming, Progress, Settings, match detail, forms), the match % chart, and the router |
 
 Common changes:
@@ -96,7 +101,23 @@ http://localhost:8123/?now=2026-11-10T19:30#upcoming. A yellow banner shows whil
 - Dates are stored as `YYYY-MM-DD` and times as `HH:MM`, in local time.
 - **Backups:** Settings → Export backup. This saves a `.json` file with `{ app, version, exportedAt, records, clubs }`. Restore replaces all matches, plus all clubs when the file includes them. Backups made before clubs existed leave saved clubs alone. "Undo last restore" puts back the previous data. Reminder settings aren't part of the backup. They're three dropdowns and quick to set again.
 
+## Sync
+
+- **Off** until `js/firebase-config.js` has a config. While off, data stays in that one browser.
+- **On:** the app shows a sign-in screen. Each change is saved on the device first, works offline, and uploads when there's signal. Other signed-in devices update within seconds, and screens redraw by themselves unless you're in the middle of a form.
+- Settings shows who's signed in and the sync status: "All changes synced", "Uploading changes…", or offline.
+  - **Copy them to my account** moves data saved before sign-in into the account. The old copy is kept on the device as `*.copiedToAccount`.
+  - **Sign out** removes this device's offline copy.
+- Setup steps: [SETUP-SYNC.md](SETUP-SYNC.md).
+
+### Testing sync locally (emulators)
+
+Needs Java 21 and `firebase-tools`. From this folder, run `firebase emulators:start --only auth,firestore --project demo-match-tracker`. Then open http://localhost:8123/?emulator=1. It signs in to the local emulators, not the real project.
+
+- Test accounts are created in the emulator with its REST API. Their details are kept in `test/emulator-accounts.json`, which git ignores.
+- To act as a second device, use http://127.0.0.1:8123/?emulator=1. A different address gets separate browser storage.
+
 ## Current limits
 
-- Data lives in one browser on one device. Nothing syncs between devices yet.
-- iPhone Safari can clear website data for sites you haven't used in a while, so export backups until sync is set up.
+- Reminders only show inside the app. There are no phone notifications.
+- Distances to clubs are typed in by hand.
