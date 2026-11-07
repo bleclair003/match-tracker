@@ -2,7 +2,9 @@
 // backup file format. No screen code and no storage code lives here, so this
 // file stays the same when sync is added later.
 
-export const SPORTS = ['USPSA', 'IDPA', 'Steel Challenge', 'PCSL', '3-Gun', 'Other'];
+// Only USPSA and PCSL, by choice. A saved match or club with another sport keeps
+// it (the forms still show it), but new ones can only pick from this list.
+export const SPORTS = ['USPSA', 'PCSL'];
 
 export const REG_STATUSES = [
   { value: 'interested', label: 'Interested' },
@@ -15,11 +17,9 @@ export const REG_STATUSES = [
 // that isn't listed here still works.
 export const DIVISION_SUGGESTIONS = {
   USPSA: ['Open', 'Limited', 'Limited Optics', 'Carry Optics', 'Production', 'Single Stack', 'Revolver', 'PCC'],
-  IDPA: ['SSP', 'ESP', 'CDP', 'CCP', 'CO', 'REV', 'BUG', 'PCC'],
 };
 export const CLASS_SUGGESTIONS = {
   USPSA: ['GM', 'M', 'A', 'B', 'C', 'D', 'U'],
-  IDPA: ['Distinguished Master', 'Master', 'Expert', 'Sharpshooter', 'Marksman', 'Novice', 'Unclassified'],
 };
 
 // ---- small cleaners -------------------------------------------------------
