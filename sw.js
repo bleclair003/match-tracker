@@ -6,7 +6,7 @@
 //
 // If you add a new file the app needs offline, add it to SHELL and bump VERSION.
 
-const VERSION = 'v2';
+const VERSION = 'v3';
 const CACHE = `match-tracker-${VERSION}`;
 const SHELL = [
   './',
@@ -19,6 +19,7 @@ const SHELL = [
   './js/reminders.js',
   './js/stats.js',
   './js/sources.js',
+  './js/discover.js',
   './js/cloud.js',
   './js/firebase-config.js',
   './icons/icon.svg',
