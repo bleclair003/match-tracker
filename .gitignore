@@ -3,3 +3,7 @@ Thumbs.db
 *.bak
 test/
 *-debug.log
+
+# Obsidian per-device UI state
+.obsidian/workspace.json
+.obsidian/workspace-mobile.json
